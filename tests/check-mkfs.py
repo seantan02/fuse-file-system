@@ -37,6 +37,12 @@ def test_compare(disk, teststr, found, expected):
         print(f"{teststr} [{disk}]: found {found} expected {expected}")
         exit()
 
+def test_geq(disk, teststr, first, second):
+    """Compare 'first' and 'second', print a message and exit if first < second."""
+    if first < second:
+        print(f"{teststr} [{disk}]: {first} should not be less than {second}")
+        exit()
+
 def test_nonzero(disk, teststr, found):
     """Ensure 'found' is not zero."""
     if (found == 0):
@@ -62,7 +68,8 @@ def verify_mkfs(disk, inodes, datablocks):
         test_compare(disk, "inode bitmap size", ibit_size, inodes / 8)
 
         dbit_size = read_sb['iblocks'] - read_sb['dbit']
-        test_compare(disk, "data bitmap size", dbit_size, datablocks / 8)
+        test_geq(disk, "data bitmap size", read_sb['iblocks'] - read_sb['dbit'], datablocks / 8)
+        test_compare(disk, "inode region block-aligned", read_sb['iblocks'] % blksize, 0)
         
         iregion_size = read_sb['dblocks'] - read_sb['iblocks']
         test_compare(disk, "inode region size", iregion_size, inodes * blksize)
