@@ -37,7 +37,7 @@ def test_nonzero(disk, teststr, found):
     """Ensure 'found' is not zero."""
     if (found == 0):
         print(f"{teststr} [{disk}]: unexpectedly zero or empty")
-	exit()
+        exit()
     
 def verify_mkfs(disk, inodes, datablocks):
     """Verify the superblock and root inode on a wfs disk."""
