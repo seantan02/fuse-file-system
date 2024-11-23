@@ -12,8 +12,12 @@ sbsize = 48
 inodesize = 120
 blksize = 512
 
-def read_inode(diskf, loc):
-    diskf.seek(loc)
+def roundup(n, k):
+    remain = n % k
+    return n if remain == 0 else (n + (k - remain))
+
+def read_inode(diskf, loc):    
+    diskf.seek(roundup(loc, 512))
     i = diskf.read(inodesize)
     return {
         name: int.from_bytes(i[offset:offset + size], sys.byteorder)
@@ -88,7 +92,6 @@ def main():
     disks = args[2:]
 
     for disk in disks:
-        current_disk = disk
         verify_mkfs(disk, inodes, datablocks)
 
     print("Success")
