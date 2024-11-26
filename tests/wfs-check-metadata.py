@@ -17,6 +17,12 @@ def test_geq(teststr, first, second):
         print(f"{teststr}: {first} should not be less than {second}")
         exit(1)
 
+def test_gt(teststr, first, second):
+    """Compare 'first' and 'second', print a message and exit if first <= second."""
+    if first <= second:
+        print(f"{teststr}: {first} must be greater than {second}")
+        exit(1)
+
 def test_nonzero(teststr, found):
     """Ensure 'found' is not zero."""
     if (found == 0):
@@ -41,7 +47,7 @@ def verify_initial_fs_state(disk, inodes, blocks):
     test_eq(f"sb: num inodes [{disk}]", wfs.get_sb_inodes(), inodes)
     test_eq(f"sb: num datablocks [{disk}]", wfs.get_sb_datablocks(), blocks)
 
-    test_geq(f"add raid fields to superblock", wfs.get_ibit(), wfs.get_sb_size())
+    test_gt(f"add raid fields to superblock", wfs.get_ibit(), wfs.get_sb_size())
     test_eq(f"inode bitmap size [{disk}]",
                  wfs.get_dbit() - wfs.get_ibit(), inodes / 8)
     
