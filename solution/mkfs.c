@@ -30,6 +30,10 @@
  - write these structures to all disk images
 **/
 
+// global variable
+unsigned char disk_count = 0;
+unsigned char total_disks = 0;
+
 struct mkfs_info {
   char RAID_mode[3];
   char *disks[MAX_DISKS];
@@ -99,8 +103,8 @@ int parse_args(int argc, char **argv, struct mkfs_info *mkfs_information){
   // we go through the string using token and find each parameters
   char *tmp;
   int i = 0;
-  int num_inodes, b, d_count;
-  d_count = 0;
+  int num_inodes, b;
+  unsigned char d_count = 0;
 
   char arg_r[] = "-r";
   char arg_d[] = "-d";
@@ -116,7 +120,6 @@ int parse_args(int argc, char **argv, struct mkfs_info *mkfs_information){
 	// if this is one of the arg then we take next one parse it and i++
 	if(strcmp(tmp, arg_r) == 0){
 	  strcpy(mkfs_information->RAID_mode, *(argv+i+1));
-
 	}else if(strcmp(tmp, arg_d) == 0){
 	  (mkfs_information->disks)[d_count++] = *(argv+i+1);
 
@@ -136,6 +139,9 @@ int parse_args(int argc, char **argv, struct mkfs_info *mkfs_information){
 	}
 	i++;
   }
+
+  // update d_count in global
+  total_disks = d_count;
 
   return 0;
 }
@@ -164,6 +170,8 @@ void sb_init(uint num_inode, uint num_data_b, struct mkfs_info *mkfs_information
   superblock->d_blocks_ptr = superblock->i_blocks_ptr + (mkfs_information->num_inodes * BLOCK_SIZE); 
   // raid
   strcpy(superblock->raid, mkfs_information->RAID_mode);
+  superblock->disk_num = disk_count++; // increment after use
+  superblock->total_disks = total_disks;
 
   return;
 }
