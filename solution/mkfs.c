@@ -172,6 +172,7 @@ void sb_init(uint num_inode, uint num_data_b, struct mkfs_info *mkfs_information
   strcpy(superblock->raid, mkfs_information->RAID_mode);
   superblock->disk_num = disk_count++; // increment after use
   superblock->total_disks = total_disks;
+  if(DEBUG) printf("The superblock disk num is %i\n", disk_count-1);
 
   return;
 }
@@ -254,15 +255,15 @@ int main(int argc, char **argv){
   }
 
   struct wfs_sb *superblock = calloc(1, sizeof(struct wfs_sb));
-  sb_init(mkfs_information->num_inodes, mkfs_information->num_data_b, mkfs_information, superblock);
-  if(DEBUG){
-	printf("Superblock num_inodes: %ld, num_data_blocks: %ld, i_bitmap_ptr: %ld, d_bitmap_ptr: %ld, i_blocks_ptr: %ld,  d_blocks_ptr: %ld\n", superblock->num_inodes, superblock->num_data_blocks, superblock->i_bitmap_ptr, superblock->d_bitmap_ptr, superblock->i_blocks_ptr, superblock->d_blocks_ptr);
+  if(superblock == NULL){
+	if(DEBUG) printf("Calloc failed in main for superblock\n");
+	exit(1);
   }
 
   struct wfs_inode *root_inode = calloc(1, sizeof(struct wfs_inode));
-  init_root_inode(superblock, root_inode);
-  if(DEBUG){
-	printf("Root inode: num: %d, mode: %o, uid: %d, gid: %d, size: %lld bytes, nlinks: %d, atim: %s, mtim: %s, ctim: %s, block 0: %lld\n", root_inode->num, root_inode->mode, root_inode->uid, root_inode->gid, (long long) root_inode->size, root_inode->nlinks, ctime(&root_inode->atim), ctime(&root_inode->mtim), ctime(&root_inode->ctim), (long long) root_inode->blocks[0]);
+  if(root_inode == NULL){
+	if(DEBUG) printf("Calloc failed in main for root_inode\n");
+	exit(1);
   }
 
   char *disk;
@@ -270,6 +271,16 @@ int main(int argc, char **argv){
   for(int i=0; i < MAX_DISKS; i++){
 	if(mkfs_information->disks[i] == NULL) continue; // skip if it's nothing
 	disk = mkfs_information->disks[i];
+	sb_init(mkfs_information->num_inodes, mkfs_information->num_data_b, mkfs_information, superblock);
+	if(DEBUG){
+	  printf("Superblock num_inodes: %ld, num_data_blocks: %ld, i_bitmap_ptr: %ld, d_bitmap_ptr: %ld, i_blocks_ptr: %ld,  d_blocks_ptr: %ld\n", superblock->num_inodes, superblock->num_data_blocks, superblock->i_bitmap_ptr, superblock->d_bitmap_ptr, superblock->i_blocks_ptr, superblock->d_blocks_ptr)    ;
+	}
+
+	init_root_inode(superblock, root_inode);
+	if(DEBUG){
+	  printf("Root inode: num: %d, mode: %o, uid: %d, gid: %d, size: %lld bytes, nlinks: %d, atim: %s, mtim: %s, ctim: %s, block 0: %lld\n", root_inode->num, root_inode->mode, root_inode->uid, root_inode->gid, (long long) root_inode->size, root_inode->nlinks, ctime(&root_inode->atim), ctime(&root_inode->mtim), ctime(&root_inode->ctim), (long long) root_inode->blocks[0]);
+	}
+	
 	set_up_disk(disk, superblock, root_inode);
   }
 

@@ -63,10 +63,23 @@ struct wfs_dentry {
 // definition
 #define MAX_DISKS 10
 // Struct
-struct disk_information{
+struct filesystem_context{
   char *disks[MAX_DISKS];
+  int num_disks;
+  char raid_mode[3];
+  int disk_fds[MAX_DISKS];
+  struct wfs_inode *curr_inode;
 };
 
 // functions declaration
 void read_superblock(const char *disk_path, struct wfs_sb *sb);
-int filter_args(int argc, char **argv, struct disk_information *df, int *fuse_argc, char **fuse_args);
+void read_inode(const char *disk_path, int i_number, struct wfs_inode *inode);
+int filter_args(int argc, char **argv, struct filesystem_context *context, int *fuse_argc, char **fuse_args);
+void find_inode(char *path, struct wfs_inode *inode);
+
+
+
+
+
+
+
