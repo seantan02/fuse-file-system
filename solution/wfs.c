@@ -94,10 +94,182 @@ static int my_mkdir(const char* path, mode_t mode){
   return 0;
 }
 
+static int my_read(const char* path, char *buf, size_t size, off_t offset, struct fuse_file_info* fi){
+  return -1;
+}
+
+static int my_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi){
+  if(DEBUG) fprintf(stdout, "my_write called!\n");
+  // get sb
+  struct wfs_sb *sb = calloc(1, sizeof(struct wfs_sb));
+  if(sb == NULL){
+	if(DEBUG) printf("ERROR my_write: calloc failed for sb\n");
+	return -1;
+  }
+  read_superblock(0, sb);
+
+  // 1) check limit
+  size_t max_size = (D_BLOCK + 1 + BLOCK_SIZE / sizeof(off_t)) * BLOCK_SIZE;
+  if(offset + size > max_size) return -ENOSPC; // insufficient space
+  // 2) Check if file exist
+  struct wfs_inode *inode = calloc(1, sizeof(struct wfs_inode));
+  if(inode == NULL){
+	if(DEBUG) printf("ERROR my_write: free();calloc for inode failed\n");
+	return -1;
+  }
+  // 3) check if file exist
+  int file_not_exist = traverse_path((char*)path, inode);
+  if(file_not_exist){
+	return -1; //4) error if no inode found
+  }
+  // 5) check permission
+  if (!(inode->mode & S_IWUSR)) {
+    free(inode);
+    return -EACCES; // no permission
+  }
+  // 6) which block of data to start writing to
+  int blk_to_start = (offset >> power_of_2(BLOCK_SIZE));
+  if(DEBUG) printf("DEBUG my_write: blk_to_use is %i\n", blk_to_start);
+  // how many blocks do we need
+  int num_blocks_needed = size >> power_of_2(BLOCK_SIZE);
+  if(size & (BLOCK_SIZE-1)) num_blocks_needed += 1;
+  if(DEBUG) printf("DEBUG my_write: blocks needed for write is %i\n", num_blocks_needed);
+  // 7) if blk_to_use < 7 then we go through blocks 0-6
+  char db_buffer[BLOCK_SIZE], db_buffer2[BLOCK_SIZE]; 
+  off_t *db_offset = calloc(1, sizeof(off_t));
+  off_t *db_offset2 = calloc(1, sizeof(off_t));
+  if(db_offset == NULL || db_offset2 == NULL){
+	if(DEBUG) printf("ERROR my_write: calloc failed for db_offset or db_offset2\n");
+	return -1;
+  }
+  
+  off_t curr_offset, inode_offset;
+  curr_offset = offset & (BLOCK_SIZE-1);
+  inode_offset = sb->i_blocks_ptr + (BLOCK_SIZE * inode->num);
+  size_t curr_size, total_size_written;
+  total_size_written = 0;
+  int i, need_indirect, write_to_disk_failed, allocate_db_failed;
+  need_indirect = 0;
+  if(blk_to_start + num_blocks_needed - 1 > D_BLOCK) need_indirect = 1;
+  //inode_changed = 0;
+  // e.g: 513 should be 1 for block 1
+  if(blk_to_start < IND_BLOCK){
+	for(i = blk_to_start; i < IND_BLOCK; i++){
+	  if(total_size_written >= size) break;
+	  // check if block == 0; Allocate + Update block value if yes else read it;
+	  if(inode->blocks[i] == 0){
+		allocate_db_failed = allocate_db(context->raid_mode, i, db_buffer, db_offset);
+		if(allocate_db_failed){
+		  if(DEBUG) printf("ERROR my_write: failed to allocate db\n");
+		  return allocate_db_failed;
+		}
+		inode->blocks[i] = *db_offset;
+		//inode_changed = 1;
+	  }else{ // read it
+		*db_offset = inode->blocks[i];
+		read_db(context->raid_mode, i, *db_offset, db_buffer);	
+	  }
+	  curr_size = BLOCK_SIZE - curr_offset;
+	  // write BLOCK_SIZE of data to db_buffer and write to disk
+	  memcpy((db_buffer + curr_offset), (buf + total_size_written), curr_size);
+	  // write datablock to disk
+	  write_to_disk_failed = write_db_to_disk(context->raid_mode, i, *db_offset, BLOCK_SIZE, db_buffer);
+	  /*// write to inode if there's any change to inode
+	  if(inode_changed){
+		write_to_disk_failed = write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), inode);
+		if(write_to_disk_failed){
+		  if(DEBUG) printf("ERROR my_write: write_to_disk failed for inode\n");
+		  return write_to_disk_failed;
+		}
+		inode_changed = 0;
+	  }*/
+	  total_size_written += curr_size;
+	  curr_offset = 0;
+	}
+  }
+  // if we need to use indirect blocks:
+  if(need_indirect){
+	// first read in the indirect pointer
+	// if blocks[7] == 0, we need to allocate a db to it as usual; else we read it in and go through
+	// by converting it to off_t*
+	char raid1[] = "1";
+	if(inode->blocks[IND_BLOCK] == 0){
+	  allocate_db_failed = allocate_db(raid1, i, db_buffer, db_offset); // raid 1 for ind.
+	  if(allocate_db_failed){
+		if(DEBUG) printf("ERROR my_write: failed to allocate db\n");
+		return allocate_db_failed;
+	  }
+	  inode->blocks[IND_BLOCK] = *db_offset;
+	  //inode_changed = 1;
+	}else{ // read the indirect block in
+	  *db_offset = inode->blocks[IND_BLOCK];
+	  read_db(raid1, i, *db_offset, db_buffer);
+	}
+	// now we can follow the indirect pointer to perform what we need
+	if(blk_to_start >= IND_BLOCK){ // that means we did not touch i yet (we didn't use dir ptr;
+	  i = blk_to_start;
+	}
+
+	i -= IND_BLOCK; // set index respective to indirect data block
+	// go through the indirect pointers and write data to it
+	off_t *ind_ptr = (off_t*)db_buffer;
+	for(; i<(BLOCK_SIZE/sizeof(off_t)); i++){
+	  if(total_size_written >= size) break; // done when we write all the buffer data
+	  if(*(ind_ptr + i) == 0){ // allocate db
+		allocate_db_failed = allocate_db(context->raid_mode, i, db_buffer2, db_offset2);
+		if(allocate_db_failed){
+		  if(DEBUG) printf("ERROR my_write: failed to allocate db\n");
+		  return allocate_db_failed;
+		}
+		*(ind_ptr + i) = *db_offset2;
+	  }else{
+		*db_offset2 = *(ind_ptr + i);
+		read_db(context->raid_mode, i, *db_offset2, db_buffer2);
+	  }
+	  curr_size = BLOCK_SIZE - curr_offset;
+	  memcpy((db_buffer2 + curr_offset), (buf + total_size_written), curr_size);
+	  write_to_disk_failed = write_db_to_disk(context->raid_mode, i+IND_BLOCK, *db_offset2, BLOCK_SIZE, db_buffer2); // save the data
+	  if(write_to_disk_failed) return write_to_disk_failed;
+	  write_to_disk_failed = write_db_to_disk(raid1, i, *db_offset, BLOCK_SIZE, db_buffer);  // save the indirect ptr after data written
+	  if(write_to_disk_failed) return write_to_disk_failed;
+	  // update total written and offset
+	  total_size_written += curr_size;
+	  curr_offset = 0;
+	}
+    /*// save to inode if it's changed
+	if(inode_changed){
+	  write_to_disk_failed = write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), inode);
+	  if(write_to_disk_failed){
+		if(DEBUG) printf("ERROR my_write: write_to_disk failed for inode\n");
+		return write_to_disk_failed;
+	  }
+	  inode_changed = 0;
+	}*/
+  }
+  // update inode
+  inode->size += size;
+  inode->mtim = time(NULL);
+  // save inode
+  write_to_disk_failed = write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), (void*)inode);
+  if(write_to_disk_failed){
+	if(DEBUG) printf("ERROR my_write: write_to_disk failed for inode\n");
+	return write_to_disk_failed;
+  }  
+  //free
+  free(sb);
+  free(inode);
+  free(db_offset);
+  free(db_offset2);
+
+  return size;
+}
+
 static struct fuse_operations ops = {
     .getattr = my_getattr,
 	.mknod = my_mknod,
 	.mkdir = my_mkdir,
+	.read    = my_read,
+	.write   = my_write,
 };
 
 // helper functions
@@ -729,60 +901,6 @@ int create_node(const char *path, mode_t mode, int is_file){
 	return add_dentry_failed;
   }
 
-  // then add '.' and '..' to inode if it's dir else set inode blocks to all 0
-  /*if(!is_file){ // if it's a directory
-	if(DEBUG) printf("DEBUG create_node: Creating a directory\n");
-	struct wfs_dentry *dentryDot = calloc(1, sizeof(struct wfs_dentry));
-	struct wfs_dentry *dentryDotDot = calloc(1, sizeof(struct wfs_dentry));
-	if(dentryDot == NULL || dentryDotDot == NULL){
-	  if(DEBUG) printf("ERROR create_node: calloc failed for dentryDot or dentryDotDot\n");
-	  return -1;
-	} 
-
-	// add '..' and '.' dentry to it; reset dentry
-	char dot[] = ".";
-	char dotdot[] = "..";
-	strcpy(dentryDot->name, dot);
-	dentryDot->num = inode->num;
-	add_dentry_failed = add_dentry(inode, dentryDot);
-	if(add_dentry_failed){
-	  if(DEBUG) printf("ERROR create_node: add entry failed\n");
-	  free(dentryDot);
-	  free(dentryDotDot);
-	  return add_dentry_failed;
-	}
-	if(DEBUG) printf("DEBUG create_node: Add dentry with name %s successful\n", dentryDot->name);
-
-	// reset dentry
-	strcpy(dentryDotDot->name, dotdot);
-	dentryDotDot->num = tmp_inode->num;
-	add_dentry_failed = add_dentry(inode, dentryDotDot);
-	if(add_dentry_failed){
-	  if(DEBUG) printf("ERROR create_node: add entry failed!\n");
-	  free(dentryDot);
-	  free(dentryDotDot);
-	  return add_dentry_failed;
-	}
-	if(DEBUG) printf("DEBUG create_node: Add dentry with name %s successful\n", dentryDotDot->name);
-	free(dentryDot);
-	free(dentryDotDot);
-  }
-  // do nothing else if it's a file except for writing the inode to disk
-  else{
-	if(DEBUG) printf("DEBUG create_node: Creating a file instead!\n");
-    // read superblock to use it
-	struct wfs_sb *sb = calloc(1, sizeof(struct wfs_sb));
-	if(sb == NULL){
-	  if(DEBUG) printf("ERROR create_node: calloc failfed for sb");
-	  exit(-1);
-	}
-	read_superblock(0, sb);
-	
-	off_t inode_offset = sb->i_blocks_ptr + (inode->num * BLOCK_SIZE);
-	write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), (void*) inode);
-
-	free(sb);
-  }*/
   struct wfs_sb *sb = calloc(1, sizeof(struct wfs_sb));
   if(sb == NULL){
 	if(DEBUG) printf("ERROR create_node: calloc failfed for sb");
