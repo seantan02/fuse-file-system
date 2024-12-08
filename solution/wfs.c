@@ -285,15 +285,15 @@ int power_of_2(int num) {
     return power;
 }
 
-int find_bit_zero(uint32_t bits, uint32_t *z){
+int find_bit_zero(uint32_t bits){
   if(bits == 0xffffffff || bits == -1){
 	if(DEBUG) printf("Bit value indicates full! Bit: %x\n", bits);
     return -1;
   }
 
   uint32_t y = bits + 1;
-  *z = (y & -y);
-  return (unsigned char) power_of_2(*z);
+  uint32_t z = (y & -y);
+  return (unsigned char) power_of_2(z);
 }
 
 /*
@@ -690,17 +690,12 @@ int allocate_inode(struct wfs_inode *inode){
   uint32_t *bits = (uint32_t*) buffer;
 
   found = 0;
-  uint32_t *z = calloc(1, sizeof(uint32_t));
-  if(z == NULL){
-	if(DEBUG) printf("ERROR allocate_inode: calloc for z failed\n");
-	exit(-1);
-  }
 
   int i, index;
   i = 0;
   while(i < (size / 4)){
 	uint32_t bit_val = *(bits + i);
-    index = find_bit_zero(bit_val, z);
+    index = find_bit_zero(bit_val);
 	if(index == -1){
 	  i++;
 	  continue;
@@ -708,7 +703,8 @@ int allocate_inode(struct wfs_inode *inode){
 	  found = 1;
 	}
 
-	*(bits + i) += *z;
+	//*(bits + i) += *z;
+	*(bits + i) |= (1 << index);
     int write_bitmap_failed;
     write_bitmap_failed = write_to_disk(-1, sb->i_bitmap_ptr, size, (char*)bits); // write to all disks
 	if(write_bitmap_failed){
@@ -727,7 +723,6 @@ int allocate_inode(struct wfs_inode *inode){
   inode->num = index+(i * 31)+i;
 
   free(sb); // free sb when done 
-  free(z);
   return 0;
 }
 
@@ -770,17 +765,11 @@ int allocate_db(char *raid_mode, int num_blocks_in_use, char *dest, off_t *ptr){
   uint32_t *bits = (uint32_t*) buffer;
  
   found = 0;
-  uint32_t *z = calloc(1, sizeof(uint32_t));
-  if(z == NULL){
-    if(DEBUG) printf("ERROR allocate_inode: calloc for z failed\n");
-    exit(-1);
-  }
- 
   int i, index;
   i = 0;
   while(i < (size / 4)){
 	uint32_t bit_val = *(bits + i);
-    index = find_bit_zero(bit_val, z);
+    index = find_bit_zero(bit_val);
     if(index == -1){
       i++;
       continue;
@@ -788,7 +777,7 @@ int allocate_db(char *raid_mode, int num_blocks_in_use, char *dest, off_t *ptr){
 	  found = 1;
 	}
  
-    *(bits + i) += *z;
+    *(bits + i) |= (1 << index);
     int write_bitmap_failed;
     write_bitmap_failed = write_to_disk(disk_to_write, sb->d_bitmap_ptr, size, (char*)bits);
     if(write_bitmap_failed){
@@ -807,7 +796,6 @@ int allocate_db(char *raid_mode, int num_blocks_in_use, char *dest, off_t *ptr){
   memset(dest, 0, BLOCK_SIZE);
  
   free(sb); // free sb when done 
-  free(z);
   return 0;
 }
 
@@ -994,7 +982,7 @@ int add_dentry(struct wfs_inode *inode, struct wfs_dentry *dentry){
   off_t inode_offset = sb->i_blocks_ptr + (inode->num * BLOCK_SIZE);
   write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), (void*) inode);
   // write a BLOCK of dentry datablock to disk depending on raid mode and datablock index
-  write_db_to_disk(context->raid_mode, i, *db_offset, BLOCK_SIZE, db_buffer);
+  write_db_to_disk(context->raid_mode, i-1, *db_offset, BLOCK_SIZE, db_buffer);
 
   if(DEBUG){
 	read_db(context->raid_mode, i, *db_offset, db_buffer);
