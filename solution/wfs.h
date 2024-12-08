@@ -71,10 +71,20 @@ struct shared_state{
 };
 
 // functions declaration
+int power_of_2(int num);
+//int find_bit_zero(uint32_t bits, uint32_t *z);
+int filter_args(int argc, char **argv, int *fuse_argc, char **fuse_args);
 void read_superblock_by_path(const char *disk_path, struct wfs_sb *sb);
 void read_superblock(int disk_num, struct wfs_sb *sb);
 void read_inode_by_path(const char *disk_path, int i_number, struct wfs_inode *inode);
 void read_inode(int disk_num, int i_number, struct wfs_inode *inode);
-int filter_args(int argc, char **argv, int *fuse_argc, char **fuse_args);
-void traverse_path(char *path, struct wfs_inode *inode);
-
+void read_bitmap(int disk_num, int for_inode, char *dest);
+int write_to_disk(int disk_num, off_t offset, size_t size, char *src);
+int write_db_to_disk(char *raid_mode, int db_num, off_t offset, size_t size, char *src);
+void read_db(char *raid_mode, int db_block_index, off_t block_offset, char * dest);
+int traverse_path(char *path, struct wfs_inode *inode);
+void set_up_context_fds();
+int allocate_inode(struct wfs_inode *inode);
+int allocate_db(char *raid_mode, int num_blocks_in_use, char *dest, off_t *ptr);
+int create_node(const char *path, mode_t mode, int is_file);
+int add_dentry(struct wfs_inode *inode, struct wfs_dentry *dentry);
