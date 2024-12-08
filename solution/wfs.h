@@ -72,6 +72,7 @@ struct shared_state{
 
 // functions declaration
 int power_of_2(int num);
+struct wfs_sb* get_superblock();
 //int find_bit_zero(uint32_t bits, uint32_t *z);
 int filter_args(int argc, char **argv, int *fuse_argc, char **fuse_args);
 void read_superblock_by_path(const char *disk_path, struct wfs_sb *sb);
