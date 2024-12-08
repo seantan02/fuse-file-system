@@ -19,7 +19,7 @@ static int my_getattr(const char *path, struct stat *stbuf) {
   // Implementation of getattr function to retrieve file attributes
   // Fill stbuf structure with the attributes of the file/directory indicated by path
   // Zero out the stat structure first
-  if(DEBUG) fprintf(stdout, "my_getattr called!\n");
+  if(DEBUG) fprintf(stdout, "my_getattr called with path: %s!\n", path);
   memset(stbuf, 0, sizeof(struct stat));
 
   // Find the inode for this path
@@ -30,7 +30,6 @@ static int my_getattr(const char *path, struct stat *stbuf) {
 	return traverse_path_failed;
   }
 
-  fprintf(stdout, "Inode found with num: %i\n", inode->num);
   // Populate stat structure from inode
   stbuf->st_uid = inode->uid;
   stbuf->st_gid = inode->gid;
@@ -410,6 +409,7 @@ int traverse_path(char *path, struct wfs_inode *inode){
   // we will first retrieve root node
   // make a duplicate of the path
   char *path_copy = strdup(path);
+  if(DEBUG) printf("DEBUG traverse_path: Path name traversing: %s\n", path_copy);
   struct wfs_inode *tmp_inode = calloc(1, sizeof(struct wfs_inode));
   if(tmp_inode == NULL){
 	if(DEBUG) printf("ERROR find_inode: calloc failed for tmp_inode\n");
@@ -465,7 +465,7 @@ int traverse_path(char *path, struct wfs_inode *inode){
 		exit(-1);
 	  }
 	}
-	token = strtok(NULL, path_copy);
+	token = strtok(NULL, delimiter);
   }
 
   memcpy(inode, tmp_inode, sizeof(struct wfs_inode)); // copy over the inode if found
@@ -730,7 +730,7 @@ int create_node(const char *path, mode_t mode, int is_file){
   }
 
   // then add '.' and '..' to inode if it's dir else set inode blocks to all 0
-  if(!is_file){ // if it's a directory
+  /*if(!is_file){ // if it's a directory
 	if(DEBUG) printf("DEBUG create_node: Creating a directory\n");
 	struct wfs_dentry *dentryDot = calloc(1, sizeof(struct wfs_dentry));
 	struct wfs_dentry *dentryDotDot = calloc(1, sizeof(struct wfs_dentry));
@@ -782,8 +782,17 @@ int create_node(const char *path, mode_t mode, int is_file){
 	write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), (void*) inode);
 
 	free(sb);
+  }*/
+  struct wfs_sb *sb = calloc(1, sizeof(struct wfs_sb));
+  if(sb == NULL){
+	if(DEBUG) printf("ERROR create_node: calloc failfed for sb");
+	exit(-1);
   }
-  
+  read_superblock(0, sb);
+  off_t inode_offset = sb->i_blocks_ptr + (inode->num * BLOCK_SIZE);
+  write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), (void*) inode);
+
+  free(sb);  
   free(inode);
   free(tmp_inode);
   free(path_copy);
@@ -847,7 +856,7 @@ int add_dentry(struct wfs_inode *inode, struct wfs_dentry *dentry){
 	  read_db(context->raid_mode, i, inode->blocks[i], db_buffer);
 	  tmp_dentry = (struct wfs_dentry*) db_buffer;
 	  for(int j=0; j < (BLOCK_SIZE/sizeof(struct wfs_dentry)); j++){
-		if(tmp_dentry[j].name != 0) continue;
+		if(strcmp(tmp_dentry[j].name, "\0") != 0) continue;
 		dentry_index = j;
 		*db_offset = inode->blocks[i];
 		break;
@@ -867,7 +876,7 @@ int add_dentry(struct wfs_inode *inode, struct wfs_dentry *dentry){
   off_t inode_offset = sb->i_blocks_ptr + (inode->num * BLOCK_SIZE);
   write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), (void*) inode);
   // write a BLOCK of dentry datablock to disk depending on raid mode and datablock index
-  write_db_to_disk(context->raid_mode, i, *db_offset, sizeof(struct wfs_dentry), db_buffer);
+  write_db_to_disk(context->raid_mode, i, *db_offset, BLOCK_SIZE, db_buffer);
 
   if(DEBUG){
 	read_db(context->raid_mode, i, *db_offset, db_buffer);
