@@ -347,6 +347,57 @@ static int my_rmdir(const char* path){
   return rm_node(path, 0);
 }
 
+static int my_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi){
+  if(DEBUG) fprintf(stdout, "my_readdir called!\n");
+  // 1) find inode
+  struct wfs_inode *inode = calloc(1, sizeof(struct wfs_inode));
+  if(inode == NULL){
+	if(DEBUG) printf("ERROR my_readdir: calloc failed for inode\n");
+	exit(-1);
+  }
+  traverse_path((char*)path, inode);
+  // check if it's a dir
+  if(!(inode->mode & S_IFDIR)){
+	if(DEBUG) printf("DEBUG my_readdir: Given path is not a dir\n");
+	return -1;
+  }
+  // 2) check offset
+  unsigned int max_entries = BLOCK_SIZE / sizeof(struct wfs_dentry) * IND_BLOCK; // 7 direct blocks
+  if(offset >= max_entries){
+	if(DEBUG) printf("DEBUG my_readdir: Offset is more than equal to maximum dentries\n");
+	return -1;
+  }
+
+  // filler for '.' and '..'
+  filler(buf, ".", NULL, 0);
+  // only add ".." only if it's not root
+  if(inode->num > 0){
+	filler(buf, "..", NULL, 0);
+  }
+
+  // go through the data block and read all entries in if it exists
+  int blk_num, i;
+  blk_num = offset >> power_of_2(BLOCK_SIZE / sizeof(struct wfs_dentry));
+  char db_buffer[BLOCK_SIZE];
+  struct wfs_dentry *dentry;
+  for(; blk_num < IND_BLOCK; blk_num++){
+	if(DEBUG) printf("DEBUG my_readdir: block number to use is %i\n", blk_num);
+	if(inode->blocks[blk_num] == 0) continue; // no entries
+	// read_db in and use it
+	read_db(context->raid_mode, blk_num, inode->blocks[blk_num], db_buffer);
+	dentry = (struct wfs_dentry*)db_buffer;
+	for(i=0; i<(BLOCK_SIZE / sizeof(struct wfs_dentry)); i++){
+	  if(strcmp(dentry[i].name, "\0") == 0) continue;
+	  if (filler(buf, dentry[i].name, NULL, 0) != 0) {
+        return 0;  // Buffer full
+      }
+	}	
+  }
+
+  free(inode);
+  return 0;
+}
+
 static struct fuse_operations ops = {
     .getattr = my_getattr,
 	.mknod = my_mknod,
@@ -355,6 +406,7 @@ static struct fuse_operations ops = {
 	.write   = my_write,
 	.unlink	= my_unlink,
 	.rmdir	= my_rmdir,
+	.readdir = my_readdir,
 };
 
 // helper functions
@@ -652,6 +704,57 @@ void read_db(char *raid_mode, int db_block_index, off_t block_offset, char * des
       }
     }
   }else if(strcmp(raid_mode, "1v\0") == 0){
+	char buffer_array[MAX_DISKS][BLOCK_SIZE];
+	memset(buffer_array, 0, sizeof(buffer_array)); // set to zeroes
+	int succeeded_i = -1;
+	for (int i = 0; i < MAX_DISKS; i++) {
+	  if(context->disk_fds[i] == -1){
+		continue;
+	  }
+	  if (pread(context->disk_fds[i], temp_buffer, BLOCK_SIZE, block_offset) == BLOCK_SIZE) {
+		memcpy(*(buffer_array+i), temp_buffer, BLOCK_SIZE);
+		succeeded_i = i;
+		successful_reads++;
+	  }
+	}
+	if(successful_reads == 0) return; // no data
+	// if there's only 1 successful_read then we return it
+	if(successful_reads == 1){
+	  memcpy(dest, *(buffer_array+succeeded_i), BLOCK_SIZE);
+	  return;
+	}
+    // check which one has the most similarity
+	int similarities[MAX_DISKS], best_index, biggest_similarity;
+	best_index = -1;
+	biggest_similarity = 0;
+	memset(similarities, 0, sizeof(int) * MAX_DISKS);
+	char zero_buffer[BLOCK_SIZE] = {0};
+	for(int i=0; i < MAX_DISKS; i++){
+	  if(memcmp(*(buffer_array+i), zero_buffer, BLOCK_SIZE) == 0) continue;
+	  // compare each one
+	  for(int j = MAX_DISKS-1; j > i; j--){
+		if(memcmp(*(buffer_array+i), *(buffer_array+j), BLOCK_SIZE) == 0){
+		  similarities[i]++;
+		  similarities[j]++;
+
+		  // checck i or j bigger
+		  // then take the biggest
+		  if(similarities[i] > similarities[j]){
+			if(best_index == -1 || similarities[i] > biggest_similarity){
+			  biggest_similarity = similarities[i];
+			  best_index = i;
+			}
+		  }else{
+			if(best_index == -1 || similarities[j] > biggest_similarity){
+			  biggest_similarity = similarities[j];
+			  best_index = j;
+			}
+		  }
+		}
+	  }
+	}
+	if(best_index == -1) best_index = succeeded_i;
+	memcpy(dest, *(buffer_array + best_index), BLOCK_SIZE);
 	return;
   }else{
 	if(DEBUG) printf("ERROR read_db: unrecognized raid mode: %s\n", raid_mode);
@@ -1219,7 +1322,6 @@ int add_dentry(struct wfs_inode *inode, struct wfs_dentry *dentry){
 	  dentry_index = 0;
 	  continue;
 	}else{
-	//char *raid_mode, int db_block_index, off_t block_offset, char * dest
 	  read_db(context->raid_mode, i, inode->blocks[i], db_buffer);
 	  tmp_dentry = (struct wfs_dentry*) db_buffer;
 	  for(int j=0; j < (BLOCK_SIZE/sizeof(struct wfs_dentry)); j++){
