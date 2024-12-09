@@ -1,4 +1,4 @@
-CS537 Fall 2024 Project 6 - FUSE-based Filesystem with RAID
+## CS537 Fall 2024 Project 6 - FUSE-based Filesystem with RAID
 
 This repository contains the implementation of a custom filesystem using FUSE (Filesystem in Userspace). The filesystem supports RAID (Redundant Array of Independent Disks) configurations and implements basic file and directory operations.
 
@@ -20,39 +20,48 @@ Metadata includes superblock, inodes, data block bitmaps, and data blocks.
 Directory entries support fixed names with alphanumeric characters and underscores.
 Project Files
 
-mkfs.c
+# mkfs.c
 A utility to initialize disk images as empty filesystems. Handles RAID configuration and metadata setup.
 
 Usage:
 
-./mkfs -r <raid_mode> -d <disk1> -d <disk2> ... -i <num_inodes> -b <num_blocks>
+` ./mkfs -r <raid_mode> -d <disk1> -d <disk2> ... -i <num_inodes> -b <num_blocks> `
+
 Example:
 
-./mkfs -r 1 -d disk1 -d disk2 -i 32 -b 200
-wfs.c
+` ./mkfs -r 1 -d disk1 -d disk2 -i 32 -b 200` 
+
+# wfs.c
 The main FUSE-based filesystem implementation. Handles mounting the filesystem, RAID operations, and all file and directory operations.
 
 Usage:
 
-./wfs <disk1> <disk2> ... [FUSE options] <mount_point>
+` ./wfs <disk1> <disk2> ... [FUSE options] <mount_point> `
+
 Example:
 
-./wfs disk1 disk2 -f -s mnt
-Installation
+` ./wfs disk1 disk2 -f -s mnt` 
+
+# Installation:
 
 Clone the repository and navigate to its directory:
-git clone <repository_url>
-cd <repository_directory>
+` git clone <repository_url> `
+` cd <repository_directory> `
+
 Compile the code using the provided Makefile:
-make
+`make`
+
 Create disk images for testing:
-./create_disk.sh disk1
-./create_disk.sh disk2
+`./create_disk.sh disk1`
+`./create_disk.sh disk2`
+
 Initialize the filesystem:
-./mkfs -r 1 -d disk1 -d disk2 -i 32 -b 200
+`./mkfs -r 1 -d disk1 -d disk2 -i 32 -b 200`
+
 Mount the filesystem:
-mkdir mnt
-./wfs disk1 disk2 -f -s mnt
+`mkdir mnt`
+`./wfs disk1 disk2 -f -s mnt`
+
 Testing
 
 Open a second terminal to interact with the mounted filesystem:
@@ -88,4 +97,5 @@ Use gdb for debugging:
 gdb --args ./wfs disk1 disk2 -f -s mnt
 Author
 
-This project was implemented by Sean Tan Siong Ann as part of the CS537 Fall 2024 course.
+This project was implemented fully by Sean Tan Siong Ann as part of the CS537 Fall 2024 course.
+Author's linkedin: http://linkedin.com/in/seantan02
