@@ -192,6 +192,7 @@ static int my_read(const char* path, char *buf, size_t size, off_t offset, struc
 }
 
 static int my_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi){
+  // ** MIGHT WANT TO UPDATE parent's size!**
   if(DEBUG) fprintf(stdout, "my_write called!\n");
   // get sb
   struct wfs_sb *sb = get_superblock();
@@ -336,12 +337,24 @@ static int my_write(const char* path, const char *buf, size_t size, off_t offset
   return size;
 }
 
+static int my_unlink(const char* path){
+  if(DEBUG) fprintf(stdout, "my_unlink called!\n");
+  return rm_node(path, 1);
+}
+
+static int my_rmdir(const char* path){
+  if(DEBUG) fprintf(stdout, "my_rmdir called!\n");
+  return rm_node(path, 0);
+}
+
 static struct fuse_operations ops = {
     .getattr = my_getattr,
 	.mknod = my_mknod,
 	.mkdir = my_mkdir,
 	.read    = my_read,
 	.write   = my_write,
+	.unlink	= my_unlink,
+	.rmdir	= my_rmdir,
 };
 
 // helper functions
@@ -788,7 +801,7 @@ int allocate_inode(struct wfs_inode *inode){
   // empty the inode
   memset(inode, 0, sizeof(struct wfs_inode));
   // set inode number back; 
-  inode->num = index+(i * 31)+i;
+  inode->num = index+(i * 32);
 
   free(sb); // free sb when done 
   return 0;
@@ -853,12 +866,85 @@ int allocate_db(char *raid_mode, int num_blocks_in_use, char *dest, off_t *ptr){
   if(found == 0) return -ENOSPC;
 
   // offset value of datablock = index 
-  *ptr = sb->d_blocks_ptr + ((index + (i * 31) + i) * BLOCK_SIZE);  // the offset value in the disk
+  *ptr = sb->d_blocks_ptr + ((index + (i * 32)) * BLOCK_SIZE);  // the offset value in the disk
   read_db(context->raid_mode, disk_to_read, *ptr, dest); // read the db
   // empty the db
   memset(dest, 0, BLOCK_SIZE);
  
   free(sb); // free sb when done 
+  return 0;
+}
+
+int deallocate_inode(struct wfs_inode *inode){
+  struct wfs_sb *sb = get_superblock();
+  unsigned int size;
+  size = sb->d_bitmap_ptr - sb->i_bitmap_ptr;
+  if(DEBUG) printf("DEBUG deallocate_inode: deallocate size %i for bitmap\n", size);
+  char buffer[size];
+  read_bitmap(0, 1, buffer);
+  uint32_t *bits = (uint32_t*) buffer;
+
+  int i, index, write_to_disk_failed;
+  index = inode->num & (31);
+  i = (inode->num - index) / 32;
+  if(DEBUG) printf("DEBUG: index and i for inode bitmaps are %i %i\n", index, i);
+  // make it quick so that if the bitmap at position 32i + index is already 0, we are done;
+  if(*(bits + i) & (1 << index)){ // if bit at index is 1
+	*(bits + i) &= ~(1 << index);
+	write_to_disk_failed = write_to_disk(-1, sb->i_bitmap_ptr, size, (char*)bits);
+	if(write_to_disk_failed){
+	  if(DEBUG) printf("ERROR deallocate_inode: write bitmap failed\n");
+	  return write_to_disk_failed;
+	}
+  }
+  /*
+  // optional but we will do it
+  off_t inode_offset = sb->i_blocks_ptr + (inode->num * BLOCK_SIZE);
+  memset(inode, 0, sizeof(struct wfs_inode));
+  write_to_disk_failed = write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), (void*)inode);
+  if(write_to_disk_failed){
+	if(DEBUG) printf("ERROR deallocate_inode: write inode failed\n");
+	return write_to_disk_failed;
+  }*/
+  return 0;
+}
+
+int deallocate_db(char *raid_mode, int num_blocks_in_use, char *src, off_t db_addr){
+  struct wfs_sb *sb = get_superblock();
+  int disk_to_read, disk_to_write;
+  if(strcmp(raid_mode, "0\0") == 0){ // raid 0 STRIPE
+	disk_to_read = num_blocks_in_use % context->num_disks;
+	disk_to_write = disk_to_read;
+  }else if(strcmp(raid_mode, "1\0") == 0 || strcmp(raid_mode, "1v\0") == 0){
+	disk_to_read = 0;
+	disk_to_write = -1;
+  }else{
+	if(DEBUG) printf("ERROR deallocate_db: Invalid raid_mode\n");
+	exit(-1);
+  }
+  unsigned int size, num_data_blocks;
+  num_data_blocks = sb->num_data_blocks;
+  size = (num_data_blocks &~7);
+  if(num_data_blocks & 7) size += 8;
+  size = size / 8;
+  if(DEBUG) printf("DEBUG deallocate_db: allocate size %i for bitmap\n", size);
+  char buffer[size];
+  read_bitmap(disk_to_read, 0, buffer);
+  uint32_t *bits = (uint32_t*) buffer;
+
+  int i, index, write_to_disk_failed;
+  index = ((db_addr - sb->d_blocks_ptr) / BLOCK_SIZE) & 31;
+  i = (((db_addr - sb->d_blocks_ptr) / BLOCK_SIZE) - index) / 32;
+  if(*(bits + i) & (1 << index)){ // if bit at index is 1
+	*(bits + i) &= ~(1 << index);
+	write_to_disk_failed = write_to_disk(disk_to_write, sb->d_bitmap_ptr, size, (char*)bits);
+	if(write_to_disk_failed){
+	  if(DEBUG) printf("ERROR deallocate_inode: write bitmap failed\n");
+	  return write_to_disk_failed;
+	}
+  }
+  // optional option to write data block of zeroes into disk but we will skip it for now  
+  memset(src, 0, BLOCK_SIZE); // set to 0 so caller won't be using it and can notice error
   return 0;
 }
 
@@ -966,6 +1052,128 @@ int create_node(const char *path, mode_t mode, int is_file){
   return 0;
 }
 
+int rm_node(const char *path, int is_file){
+  // error if try to delete root
+  unsigned char is_root = 0;
+  if(strcmp(path, "/\0") == 0){
+	is_root = 1;
+  }
+  struct wfs_sb *sb = get_superblock();
+  struct wfs_inode *parent_inode = calloc(1, sizeof(struct wfs_inode));
+  struct wfs_inode *inode = calloc(1, sizeof(struct wfs_inode));
+  if(parent_inode == NULL || inode == NULL){
+    if(DEBUG) printf("ERROR my_unlink: calloc failed for parent_inode or inode\n");
+    exit(-1);
+  }
+  // get parent's inode and inode
+  char *path_copy, *parent;
+  path_copy = strdup((char*)path);
+  if(!is_root){
+	parent = dirname(path_copy);
+	if(DEBUG) printf("DEBUG parent name is %s\n", parent);
+	if(*(parent) == '.' || strcmp(parent, path) == 0){
+      if(DEBUG) printf("ERROR my_unlink: parent directory not found\n");
+      return -ENOENT;
+    }
+    traverse_path(parent, parent_inode);
+  }
+  // get inode
+  traverse_path((char*)path, inode);
+  // permission checks
+  // Check write permission for the file
+  if (getuid() != 0 && getuid() != inode->uid && getgid() != inode->gid && !(inode->mode & S_IWOTH)){
+	return -EACCES;
+  }
+  // if it's a dir, we check if there's more than 1 link
+  if(!is_file && inode->nlinks > 1){
+	if(DEBUG) printf("ERROR rm_node: trying to remove dir with more than 1 link\n");
+	return -1;
+  }
+  // 2) free and deallocate data blocks
+  unsigned char ind_ptr_changed;
+  off_t db_offset, *ind_ptr, inode_offset;
+  char db_buffer1[BLOCK_SIZE], db_buffer2[BLOCK_SIZE], file_name[MAX_NAME];
+  int i, index, deallocate_failed, inode_num, parent_path_len, rm_dentry_failed, write_to_disk_failed;
+  ind_ptr_changed = 0;
+  for(i=0; i < (IND_BLOCK + (BLOCK_SIZE / sizeof(off_t))); i++){
+    // go t block i and check if i is > D_BLOCK
+    if(i > D_BLOCK){
+	  if(!is_file) break;  // done if it's a dir
+      index = i - IND_BLOCK;
+      // if ind pointer is 0 we are done
+      if(inode->blocks[IND_BLOCK] == 0) break;
+      // only if index == 0 we will read in db_buffer2
+      if(index == 0){
+		ind_ptr_changed = 1;
+        read_db(context->raid_mode, IND_BLOCK, inode->blocks[IND_BLOCK], db_buffer2);
+      }
+      ind_ptr = (off_t*) db_buffer2;
+    }else{
+      index = i;
+	  ind_ptr = inode->blocks;
+    }
+	db_offset = *(ind_ptr + index);
+    if(db_offset == 0) continue;
+    // dellocate data block
+    // optional: set datablock to 0 and write to disk (we will skip it for now)
+    deallocate_failed = deallocate_db(context->raid_mode, i, db_buffer1, db_offset);
+    if(deallocate_failed){
+      if(DEBUG) printf("ERROR my_unlink: deallocate db failed\n");
+      return deallocate_failed;
+    }
+	// set the block addr to 0
+	*(ind_ptr + index) = 0;
+  }
+  // we should write all data block pointers to disk
+  if(is_file && ind_ptr_changed){
+	// deallocate ind pointer datablock
+	deallocate_failed = deallocate_db(context->raid_mode, IND_BLOCK, db_buffer2, inode->blocks[IND_BLOCK]);
+	if(deallocate_failed){
+	  if(DEBUG) printf("ERROR my_unlink: deallocate ind ptr db failed\n");
+	  return deallocate_failed;
+	}
+
+	if(DEBUG) printf("DEBUG rm_node: writing to ind block at %li\n", inode->blocks[IND_BLOCK]);
+	write_to_disk_failed = write_db_to_disk(context->raid_mode, IND_BLOCK, inode->blocks[IND_BLOCK], BLOCK_SIZE, db_buffer2);
+	if(write_to_disk_failed){
+	  if(DEBUG) printf("ERROR rm_node: write_to_disk failed\n");
+	  return write_to_disk_failed;
+	}
+  }
+  inode_offset = sb->i_blocks_ptr + (inode->num * BLOCK_SIZE);
+  write_to_disk_failed = write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), (void*) inode);
+  if(write_to_disk_failed){
+	if(DEBUG) printf("ERROR rm_node: write_to_disk failed\n");
+	return write_to_disk_failed;
+  }
+
+  if(!is_root){
+	parent_path_len = strlen(parent);
+	 memset(file_name, 0, MAX_NAME); // set all to zeroes 
+	if(path[parent_path_len] == '/'){
+      strcpy(file_name, (path+parent_path_len+1));
+	}else{
+      strcpy(file_name, (path+parent_path_len));
+	}
+	inode_num = inode->num;
+  }
+  // 3) free and deallocate inode
+  deallocate_inode(inode);
+  if(!is_root){
+    // 4) remove dentry from parent
+	rm_dentry_failed = rm_dentry(parent_inode, (const char*)file_name, inode_num);
+	if(rm_dentry_failed){
+      if(DEBUG) printf("ERROR my_unlink: rm_dentry failed!");
+      return rm_dentry_failed;
+    }
+  }
+
+  free(sb);
+  free(parent_inode);
+  free(inode);
+
+  return 0;
+}
 
 int add_dentry(struct wfs_inode *inode, struct wfs_dentry *dentry){
   // 1) Get the current size of entries
@@ -1049,6 +1257,51 @@ int add_dentry(struct wfs_inode *inode, struct wfs_dentry *dentry){
   return 0;
 }
 
+int rm_dentry(struct wfs_inode *inode, const char *dentry_name, int dentry_num){
+  if(dentry_num <= 0) return -1; // shouldn't have -1 or 0 dentry num
+  struct wfs_sb *sb = get_superblock();
+  int dentry_index = -1;
+  char db_buffer[BLOCK_SIZE];
+  struct wfs_dentry *tmp_dentry = 0;
+  off_t *db_offset = calloc(1, sizeof(off_t));
+  if(db_offset == NULL){
+	if(DEBUG) printf("ERROR add_dentry: Calloc failed for db_num;\n");
+	exit(-1);
+  }
+  // 2) Find dentry
+  int i;
+  for(i=0; i<IND_BLOCK; i++){
+	if(dentry_index >= 0) break;
+	read_db(context->raid_mode, i, inode->blocks[i], db_buffer);
+	tmp_dentry = (struct wfs_dentry*) db_buffer;
+	for(int j=0; j < (BLOCK_SIZE/sizeof(struct wfs_dentry)); j++){
+	  if(strcmp(tmp_dentry[j].name, dentry_name) == 0){
+	    dentry_index = j;
+	    *db_offset = inode->blocks[i];
+	    break;
+	  }
+	}
+  }
+  // 3) we now perform the disk operation on updating the inode and db
+  if(dentry_index == -1) return -1;
+  tmp_dentry = (struct wfs_dentry*) db_buffer;  
+  memset((tmp_dentry + dentry_index), 0, sizeof(struct wfs_dentry));
+  if(inode->size > sizeof(struct wfs_dentry)){
+	inode->size -= sizeof(struct wfs_dentry);
+  }else{
+	inode->size = 0;
+  }
+  if(inode->nlinks > 1) inode->nlinks -= 1;
+  // write the updated dentry to disk and write the inode to disk too
+  off_t inode_offset = sb->i_blocks_ptr + (inode->num * BLOCK_SIZE);
+  write_to_disk(-1, inode_offset, sizeof(struct wfs_inode), (void*) inode);
+  // write a BLOCK of dentry datablock to disk depending on raid mode and datablock index
+  write_db_to_disk(context->raid_mode, i-1, *db_offset, BLOCK_SIZE, db_buffer);  
+
+  free(sb);
+  free(db_offset);
+  return 0;
+}
 
 int main(int argc, char *argv[]) {
   // Initialize FUSE with specified operations
